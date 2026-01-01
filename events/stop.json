@@ -1,0 +1,11 @@
+{
+  "httpMethod": "POST",
+  "path": "/vpn",
+  "queryStringParameters": null,
+  "headers": {
+    "Content-Type": "application/json",
+    "x-api-key": "test-key"
+  },
+  "body": "{\"action\": \"stop\"}",
+  "isBase64Encoded": false
+}

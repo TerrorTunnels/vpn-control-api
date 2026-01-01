@@ -1,0 +1,363 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  VPN Control API - Serverless API for controlling an EC2-based OpenVPN server.
+  Provides start, stop, and status operations secured with API key authentication.
+
+Parameters:
+  EC2InstanceId:
+    Type: String
+    Description: The EC2 instance ID of the VPN server to control
+    AllowedPattern: "^i-[a-z0-9]{8,17}$"
+    ConstraintDescription: Must be a valid EC2 instance ID (e.g., i-1234567890abcdef0)
+
+  EC2Region:
+    Type: String
+    Default: us-west-2
+    Description: AWS region where the EC2 instance is located
+    AllowedValues:
+      - us-east-1
+      - us-east-2
+      - us-west-1
+      - us-west-2
+      - eu-west-1
+      - eu-west-2
+      - eu-central-1
+      - ap-northeast-1
+      - ap-southeast-1
+      - ap-southeast-2
+
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gateway deployment stage name
+    AllowedPattern: "^[a-z0-9]+$"
+
+  ThrottleRateLimit:
+    Type: Number
+    Default: 10
+    Description: Maximum requests per second
+    MinValue: 1
+    MaxValue: 10000
+
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 20
+    Description: Maximum concurrent requests
+    MinValue: 1
+    MaxValue: 5000
+
+  QuotaLimit:
+    Type: Number
+    Default: 1000
+    Description: Maximum requests per month
+    MinValue: 1
+
+  CustomDomainName:
+    Type: String
+    Default: ""
+    Description: Custom domain name for API Gateway (leave empty to skip domain mapping)
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, ""]]
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.11
+    MemorySize: 128
+    Architectures:
+      - arm64
+
+Resources:
+  # Lambda Function
+  VPNControlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-vpn-control"
+      Handler: handler.lambda_handler
+      CodeUri: .
+      Description: Controls EC2 VPN server instance (start/stop/status)
+      Environment:
+        Variables:
+          EC2_ID: !Ref EC2InstanceId
+          EC2_REGION: !Ref EC2Region
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ec2:StartInstances
+                - ec2:StopInstances
+              Resource: !Sub "arn:aws:ec2:${EC2Region}:${AWS::AccountId}:instance/${EC2InstanceId}"
+            - Effect: Allow
+              Action:
+                - ec2:DescribeInstances
+              Resource: "*"
+      Tags:
+        Project: VPNControl
+        Environment: !Ref StageName
+
+  # Lambda Permission for API Gateway
+  VPNControlFunctionApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VPNControlFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${VPNControlApi}/*"
+
+  # REST API
+  VPNControlApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}-api"
+      Description: VPN Control REST API
+      ApiKeySourceType: HEADER
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Project
+          Value: VPNControl
+
+  # /vpn Resource
+  VpnResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      ParentId: !GetAtt VPNControlApi.RootResourceId
+      PathPart: vpn
+
+  # POST /vpn Method
+  VpnPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      ResourceId: !Ref VpnResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VPNControlFunction.Arn}/invocations"
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: '400'
+        - StatusCode: '500'
+
+  # OPTIONS /vpn Method (CORS preflight)
+  VpnOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      ResourceId: !Ref VpnResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # /vpn/status Resource
+  VpnStatusResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      ParentId: !Ref VpnResource
+      PathPart: status
+
+  # GET /vpn/status Method
+  VpnStatusGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      ResourceId: !Ref VpnStatusResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VPNControlFunction.Arn}/invocations"
+        RequestTemplates:
+          application/json: |
+            {
+              "queryStringParameters": {
+                "action": "status"
+              }
+            }
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: '400'
+        - StatusCode: '500'
+
+  # OPTIONS /vpn/status Method (CORS preflight)
+  VpnStatusOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      ResourceId: !Ref VpnStatusResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      ApiKeyRequired: false
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: '200'
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # API Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - VpnPostMethod
+      - VpnOptionsMethod
+      - VpnStatusGetMethod
+      - VpnStatusOptionsMethod
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      Description: !Sub "Deployment for ${StageName}"
+
+  # API Stage
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref VPNControlApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref StageName
+      Description: !Sub "${StageName} stage"
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+          ThrottlingRateLimit: !Ref ThrottleRateLimit
+          MetricsEnabled: true
+      Tags:
+        - Key: Project
+          Value: VPNControl
+
+  # API Key
+  VPNControlApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    DependsOn: ApiStage
+    Properties:
+      Name: !Sub "${AWS::StackName}-api-key"
+      Description: API key for VPN Control API
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref VPNControlApi
+          StageName: !Ref StageName
+      Tags:
+        - Key: Project
+          Value: VPNControl
+
+  # Usage Plan
+  VPNControlUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: ApiStage
+    Properties:
+      UsagePlanName: !Sub "${AWS::StackName}-usage-plan"
+      Description: Usage plan for VPN Control API
+      ApiStages:
+        - ApiId: !Ref VPNControlApi
+          Stage: !Ref StageName
+      Throttle:
+        BurstLimit: !Ref ThrottleBurstLimit
+        RateLimit: !Ref ThrottleRateLimit
+      Quota:
+        Limit: !Ref QuotaLimit
+        Period: MONTH
+      Tags:
+        - Key: Project
+          Value: VPNControl
+
+  # Link API Key to Usage Plan
+  VPNControlUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref VPNControlApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref VPNControlUsagePlan
+
+  # Custom Domain Base Path Mapping (optional)
+  ApiBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Condition: HasCustomDomain
+    DependsOn: ApiStage
+    Properties:
+      DomainName: !Ref CustomDomainName
+      RestApiId: !Ref VPNControlApi
+      Stage: !Ref StageName
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${VPNControlApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+
+  VpnControlEndpoint:
+    Description: Full URL for VPN control endpoint
+    Value: !Sub "https://${VPNControlApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/vpn"
+
+  VpnStatusEndpoint:
+    Description: Full URL for VPN status endpoint
+    Value: !Sub "https://${VPNControlApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/vpn/status"
+
+  ApiKeyId:
+    Description: API Key ID (retrieve value from AWS Console or CLI)
+    Value: !Ref VPNControlApiKey
+
+  ApiKeyCommand:
+    Description: AWS CLI command to retrieve the API key value
+    Value: !Sub "aws apigateway get-api-key --api-key ${VPNControlApiKey} --include-value --query 'value' --output text"
+
+  LambdaFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt VPNControlFunction.Arn
+
+  LambdaFunctionName:
+    Description: Lambda function name
+    Value: !Ref VPNControlFunction
+
+  CustomDomainVpnEndpoint:
+    Condition: HasCustomDomain
+    Description: Custom domain VPN control endpoint
+    Value: !Sub "https://${CustomDomainName}/vpn"
+
+  CustomDomainStatusEndpoint:
+    Condition: HasCustomDomain
+    Description: Custom domain VPN status endpoint
+    Value: !Sub "https://${CustomDomainName}/vpn/status"

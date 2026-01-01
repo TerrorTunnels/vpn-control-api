@@ -1,0 +1,2 @@
+# AWS SDK - included in Lambda runtime, but listed for local development
+boto3>=1.28.0

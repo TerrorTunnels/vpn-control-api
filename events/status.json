@@ -1,0 +1,10 @@
+{
+  "httpMethod": "GET",
+  "path": "/vpn/status",
+  "queryStringParameters": null,
+  "headers": {
+    "x-api-key": "test-key"
+  },
+  "body": null,
+  "isBase64Encoded": false
+}

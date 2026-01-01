@@ -1,2 +1,34 @@
+# OS files
 .DS_Store
-.git
+
+# AWS SAM build artifacts
+.aws-sam/
+packaged.yaml
+packaged-template.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local development
+.envrc
+.env.local
+
+# Claude Code
+.crush/

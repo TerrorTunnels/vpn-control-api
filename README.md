@@ -1,145 +1,173 @@
 # VPN Control API
 
-This repository contains the AWS Lambda function and API Gateway setup instructions for controlling a personal OpenVPN server on AWS. It's part of a larger project created during a sabbatical in Taipei to build a complete VPN solution with iOS app control. The Lambda code was generated with assistance from AI tools (ChatGPT and Claude).
+This repository contains an AWS Lambda function and complete infrastructure-as-code (AWS SAM) for controlling a personal OpenVPN server on AWS. It's part of a larger project created during a sabbatical in Taipei to build a complete VPN solution with iOS app control.
+
+> **Note:** The initial Lambda function was generated with ChatGPT/Claude assistance in February 2025, with API Gateway setup left as manual steps. In January 2026, [Claude Code](https://claude.ai/code) generated the complete AWS SAM deployment solution, transforming this from a "some assembly required" project into a fully deployable infrastructure-as-code package.
 
 ## Overview
 
 This API provides a secure interface to control an EC2 instance running OpenVPN through:
 - REST API endpoints using API Gateway
 - Lambda function for EC2 control
-- API key authentication
-- Status monitoring capabilities
+- API key authentication with usage plans
+- Rate limiting and throttling
+- CloudWatch monitoring
 
 The API is designed to work with:
 - [VPN Infrastructure](https://github.com/rjamestaylor/vpn-infra-tf) created via Terraform
 - [VPNControl iOS App](https://github.com/rjamestaylor/VPNControl-ios) for remote management
 
+## Architecture
+
+```
+iOS App (VPNControl)
+        │
+        ▼
+┌─────────────────────┐
+│   API Gateway       │
+│  ┌───────────────┐  │
+│  │  API Key Auth │  │
+│  │  Rate Limiting│  │
+│  └───────────────┘  │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│   Lambda Function   │
+│   (handler.py)      │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│   EC2 Instance      │
+│   (OpenVPN Server)  │
+└─────────────────────┘
+```
+
 ## API Endpoints
 
-The API provides these endpoints:
-
-```
-POST /vpn
-GET  /vpn/status
-```
+| Method | Endpoint       | Description           |
+|--------|----------------|-----------------------|
+| POST   | `/vpn`         | Start or stop the VPN |
+| GET    | `/vpn/status`  | Get instance status   |
 
 ### Actions
+
 - `start`: Start the VPN instance
 - `stop`: Stop the VPN instance
 - `status`: Get current instance state
 
-## Lambda Function
+## Prerequisites
 
-The Lambda function (`handler.py`) manages EC2 instance operations:
+- [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) configured with credentials
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+- An EC2 instance ID for your VPN server
+- Python 3.11+ (for local development)
 
-```python
-def lambda_handler(event, context):
-    action = ""
-    if "queryStringParameters" in event and event["queryStringParameters"] is not None:
-        action = event["queryStringParameters"].get("action", "").lower()
-    elif "action" in event and event["action"] is not None:
-        action = event.get("action", "").lower()
-    
-    # Handle start/stop/status actions
-    try:
-        if action == "start":
-            ec2.start_instances(InstanceIds=[INSTANCE_ID])
-            message = f"Instance {INSTANCE_ID} is starting."
-        # ... additional action handling
+## Quick Start
+
+### 1. Deploy to AWS
+
+```bash
+# Set your EC2 instance ID and deploy (with optional custom domain)
+EC2_INSTANCE_ID=i-1234567890abcdef0 CustomDomainName=toggle-vpn.your-domain.com make deploy
 ```
 
-## Setup Instructions
+Or use the guided deployment for interactive setup:
 
-### Step 1: Create IAM Role
-
-1. Go to IAM Console → Create role
-2. Select AWS Service → Lambda
-3. Attach these policies:
-   - AWSLambdaBasicExecutionRole
-   - Custom EC2 control policy:
-
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ec2:StartInstances",
-                "ec2:StopInstances",
-                "ec2:DescribeInstances"
-            ],
-            "Resource": "arn:aws:ec2:your-region:your-account-id:instance/*"
-        }
-    ]
-}
+```bash
+make deploy-guided
 ```
 
-### Step 2: Deploy Lambda Function
+> **Note:** The `CustomDomainName` parameter is optional. If provided, it creates a base path mapping to an existing API Gateway custom domain.
 
-1. Create new Lambda function:
-   - Author from scratch
-   - Runtime: Python 3.9+
-   - Attach IAM role from Step 1
+### 2. Get Your API Key
 
-2. Set environment variables:
-   - `EC2_ID`: Your VPN instance ID
+```bash
+make get-api-key
+```
 
-3. Upload `handler.py` code
+### 3. Get API Endpoints
 
-### Step 3: Create API Gateway
+```bash
+make outputs
+```
 
-1. Create REST API
-2. Create resource "/vpn"
-3. Add methods:
-   - POST for control actions
-   - GET for status
-4. Integration setup:
-   - Type: Lambda Function
-   - Lambda Proxy integration: Yes
-   - Lambda Function: Select your function
+## Deployment Options
 
-### Step 4: Security Configuration
+### Using Make (Recommended)
 
-1. Enable API key requirement:
-   - Method Request settings
-   - Set "API Key Required" to true
+```bash
+# Build the application
+make build
 
-2. Create API key:
-   - API Gateway → API Keys
-   - Create new key
-   - Add to Usage Plan
+# Validate the SAM template
+make validate
 
-3. CORS configuration (if needed):
-   - Enable CORS in API Gateway
-   - Allow necessary headers
+# Deploy with custom settings
+EC2_INSTANCE_ID=i-xxx EC2_REGION=us-west-2 STAGE=prod make deploy
 
-### Step 5: Deployment
+# View deployment outputs
+make outputs
 
-1. Deploy API:
-   - Create new stage (e.g., "prod")
-   - Note the Invoke URL
-   - Save API key for client use
+# Tail Lambda logs
+make logs
+
+# Delete the stack
+make delete
+```
+
+### Using SAM CLI Directly
+
+```bash
+# Build
+sam build
+
+# Deploy
+sam deploy \
+  --stack-name vpn-control-api \
+  --capabilities CAPABILITY_IAM \
+  --resolve-s3 \
+  --parameter-overrides \
+    EC2InstanceId=i-1234567890abcdef0 \
+    EC2Region=us-west-2 \
+    StageName=prod
+```
+
+### Configuration Parameters
+
+| Parameter          | Default     | Description                              |
+|--------------------|-------------|------------------------------------------|
+| EC2InstanceId      | (required)  | EC2 instance ID to control               |
+| EC2Region          | us-west-2   | AWS region of the EC2 instance           |
+| StageName          | prod        | API Gateway stage name                   |
+| ThrottleRateLimit  | 10          | Max requests per second                  |
+| ThrottleBurstLimit | 20          | Max concurrent requests                  |
+| QuotaLimit         | 1000        | Max requests per month                   |
+| CustomDomainName   | (empty)     | Custom domain name (e.g., toggle-vpn.your-domain.com) |
 
 ## Usage Examples
 
 ### Start VPN Instance
+
 ```bash
-curl -X POST "https://your-api-id.execute-api.your-region.amazonaws.com/prod/vpn" \
+curl -X POST "https://your-api-id.execute-api.us-west-2.amazonaws.com/prod/vpn" \
      -H "x-api-key: your-api-key" \
      -H "Content-Type: application/json" \
      -d '{"action": "start"}'
 ```
 
 ### Check Status
+
 ```bash
-curl -X GET "https://your-api-id.execute-api.your-region.amazonaws.com/prod/vpn/status" \
+curl -X GET "https://your-api-id.execute-api.us-west-2.amazonaws.com/prod/vpn/status" \
      -H "x-api-key: your-api-key"
 ```
 
 ### Stop VPN Instance
+
 ```bash
-curl -X POST "https://your-api-id.execute-api.your-region.amazonaws.com/prod/vpn" \
+curl -X POST "https://your-api-id.execute-api.us-west-2.amazonaws.com/prod/vpn" \
      -H "x-api-key: your-api-key" \
      -H "Content-Type: application/json" \
      -d '{"action": "stop"}'
@@ -147,55 +175,137 @@ curl -X POST "https://your-api-id.execute-api.your-region.amazonaws.com/prod/vpn
 
 ## Response Format
 
-Successful response:
+### Successful Response
+
 ```json
 {
-    "statusCode": 200,
-    "body": {
-        "message": "Instance i-1234567890abcdef0 is starting."
-    }
+    "message": "Instance i-1234567890abcdef0 is starting.",
+    "instanceId": "i-1234567890abcdef0",
+    "action": "start"
 }
 ```
 
-Error response:
+### Status Response
+
 ```json
 {
-    "statusCode": 400,
-    "body": {
-        "message": "Invalid action. Use 'start', 'stop', or 'status'."
-    }
+    "message": "Instance i-1234567890abcdef0 is currently running.",
+    "instanceId": "i-1234567890abcdef0",
+    "state": "running",
+    "action": "status"
 }
 ```
 
-## Security Considerations
+### Error Response
 
-1. API Key Protection:
-   - Never commit API keys to source control
-   - Rotate keys periodically
-   - Use Usage Plans to limit request rates
+```json
+{
+    "error": "Invalid action",
+    "message": "Use 'start', 'stop', or 'status'.",
+    "validActions": ["start", "stop", "status"]
+}
+```
 
-2. IAM Permissions:
-   - Follow principle of least privilege
-   - Restrict EC2 actions to specific instance
-   - Enable CloudWatch logging
+## Local Development
 
-3. Network Security:
-   - Enable HTTPS only
-   - Configure CORS appropriately
-   - Consider VPC endpoints for added security
+### Setup
 
-## Monitoring and Maintenance
+```bash
+# Create local environment configuration
+cp env.json.example env.json
+# Edit env.json with your EC2 instance ID
+```
 
-1. CloudWatch Logs:
-   - Lambda function logs
-   - API Gateway access logs
-   - Errors and debugging information
+### Run Locally
 
-2. Metrics to Monitor:
-   - API Gateway 4xx/5xx errors
-   - Lambda execution duration
-   - Lambda throttling
-   - API key usage
+```bash
+# Start local API Gateway
+make local
+
+# Test a specific event
+sam local invoke VPNControlFunction --event events/status.json --env-vars env.json
+```
+
+## Security
+
+### Built-in Security Features
+
+1. **API Key Authentication**: All endpoints require a valid API key via `x-api-key` header
+2. **Usage Plans**: Rate limiting (10 req/sec) and monthly quotas (1000 req/month)
+3. **IAM Least Privilege**: Lambda has minimal EC2 permissions for the specific instance
+4. **CORS Configuration**: Configured for cross-origin requests
+5. **CloudWatch Logging**: All requests and errors are logged
+
+### Security Best Practices
+
+- **Never commit API keys** to source control
+- **Rotate API keys** periodically via the AWS Console
+- **Restrict instance scope** - IAM policy limits actions to your specific EC2 instance
+- **Enable CloudWatch alarms** for unusual activity
+- **Consider VPC endpoints** for enhanced network security
+
+## Monitoring
+
+### CloudWatch Logs
+
+Lambda function logs are available at:
+```
+/aws/lambda/{stack-name}-vpn-control
+```
+
+API Gateway logs (when enabled):
+```
+/aws/apigateway/{stack-name}
+```
+
+### Tail Logs in Real-Time
+
+```bash
+make logs
+```
+
+### Key Metrics to Monitor
+
+- API Gateway 4xx/5xx error rates
+- Lambda execution duration and errors
+- Throttling and API key usage
+
+## Project Structure
+
+```
+vpn-control-api/
+├── handler.py           # Lambda function code
+├── template.yaml        # SAM/CloudFormation template
+├── samconfig.toml       # SAM CLI configuration
+├── Makefile             # Build and deployment commands
+├── requirements.txt     # Python dependencies
+├── env.json.example     # Local development config template
+├── events/              # Test events for local development
+│   ├── start.json
+│   ├── stop.json
+│   └── status.json
+└── README.md
+```
+
+## Troubleshooting
+
+### "EC2_ID environment variable not configured"
+
+The Lambda function's EC2_ID environment variable is not set. Redeploy with the correct EC2InstanceId parameter.
+
+### "Invalid instance ID" errors
+
+Verify your EC2 instance ID format matches `i-` followed by 8-17 alphanumeric characters.
+
+### 403 Forbidden
+
+- Check that you're including the `x-api-key` header
+- Verify the API key is correct and associated with the usage plan
+- Check if you've exceeded rate limits or quota
+
+### Lambda timeout
+
+The default timeout is 30 seconds. If EC2 operations are slow, consider increasing the timeout in `template.yaml`.
 
 ## Related Projects
 
@@ -210,13 +320,10 @@ Error response:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
 - AWS for the serverless platform
-- ChatGPT and Claude for code generation assistance
-
-## Contact
-
-For questions or suggestions, please open an issue in the repository.
+- ChatGPT and Claude for initial Lambda function code generation (February 2025)
+- [Claude Code](https://claude.ai/code) for complete AWS SAM infrastructure-as-code solution (January 2026)
